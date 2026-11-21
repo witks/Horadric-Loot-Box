@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { arrangeStackables, planGemUpgrade, GD, gridDims, STACKABLE_SLOTS, STACKABLES_COLS, STACKABLES_LABEL, STACKABLES_ROWS, StashTabType, tabIsEditable, type D2Item, type D2SharedStash } from '../core';
 import { ItemTile } from './ItemTile';
 import { desc, itemKey } from '../state/store';
@@ -209,8 +209,10 @@ function StackBoardView({ docId, pane, tab, items }: { docId: string; pane: 0 | 
 const KEEP_KEY = 'hlb.gemKeep';
 const readKeep = () => {
   try {
-    const n = Number(localStorage.getItem(KEEP_KEY));
-    return localStorage.getItem(KEEP_KEY) !== null && n >= 0 && n <= 80 ? Math.round(n) : 1;
+    const raw = localStorage.getItem(KEEP_KEY);
+    if (raw === null || raw.trim() === '') return 1;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 && n <= 80 ? Math.round(n) : 1;
   } catch {
     return 1;
   }
@@ -224,6 +226,7 @@ function UpgradeGemsButton({ docId, tab }: { docId: string; tab: number }) {
   const doc = store.docs.get(docId)?.doc;
   const plan = doc?.kind === 'stash' ? planGemUpgrade(doc, tab, keep) : undefined;
   const made = plan?.made.reduce((n, m) => n + m.count, 0) ?? 0;
+  useEffect(() => setConfirming(false), [docId, tab, keep, made]);
   return (
     <div className="flex flex-wrap items-center gap-3">
       <button
@@ -260,26 +263,28 @@ function UpgradeGemsButton({ docId, tab }: { docId: string; tab: number }) {
         <span className="w-4 text-gold-300">{keep}</span>
         <span className="text-ink-500">of each grade</span>
       </label>
-      {confirming && (
-        <div className="basis-full max-w-[500px] rounded border border-gold-500/60 bg-ink-900 p-3 text-[12px] text-ink-200" role="alertdialog" aria-label="Confirm gem upgrade">
-          <div className="mb-1 font-semibold text-gold-300">Upgrade gems?</div>
-          <p>
-            Makes {made} new gem{made === 1 ? '' : 's'} and keeps {keep} of each grade. Keep a few of each grade for crafting.
-          </p>
-          <div className="mt-2 flex gap-2">
-            <button
-              type="button"
-              className="rounded border border-gold-500 bg-gold-600/25 px-2.5 py-1 text-gold-200 hover:bg-gold-600/40"
-              onClick={() => {
-                setConfirming(false);
-                store.upgradeGems(docId, tab, keep);
-              }}
-            >
-              Upgrade
-            </button>
-            <button type="button" className="rounded border border-ink-600 px-2.5 py-1 text-ink-300 hover:bg-ink-800" onClick={() => setConfirming(false)}>
-              Cancel
-            </button>
+      {confirming && made > 0 && (
+        <div className="basis-full">
+          <div className="max-w-[500px] rounded border border-gold-500/60 bg-ink-900 p-3 text-[12px] text-ink-200" role="alertdialog" aria-label="Confirm gem upgrade">
+            <div className="mb-1 font-semibold text-gold-300">Upgrade gems?</div>
+            <p>
+              Makes {made} new gem{made === 1 ? '' : 's'} and keeps {keep} of each grade. Keep a few of each grade for crafting.
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                className="rounded border border-gold-500 bg-gold-600/25 px-2.5 py-1 text-gold-200 hover:bg-gold-600/40"
+                onClick={() => {
+                  setConfirming(false);
+                  store.upgradeGems(docId, tab, keep);
+                }}
+              >
+                Upgrade
+              </button>
+              <button type="button" className="rounded border border-ink-600 px-2.5 py-1 text-ink-300 hover:bg-ink-800" onClick={() => setConfirming(false)}>
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

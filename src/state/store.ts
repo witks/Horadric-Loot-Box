@@ -1406,9 +1406,20 @@ export class Store {
       this.toast('info', plan.blocked.length ? `Nothing to upgrade: the next stacks are full (${plan.blocked.map((b) => name(b.to)).join(', ')}).` : `Nothing to upgrade: a grade needs at least ${keep + 3} gems (${keep} always stay).`);
       return false;
     }
+    const historyBefore = this.history;
     this.snapshot('upgrade gems', [docId]);
-    const done = upgradeGems(d, tab, keep);
+    let done;
+    try {
+      done = upgradeGems(d, tab, keep);
+    } catch (err) {
+      // not pop(): a full history already evicted its oldest step for this snapshot
+      this.history = historyBefore;
+      this.toast('error', `Couldn't upgrade gems: ${err instanceof Error ? err.message : String(err)}`);
+      this.emit();
+      return false;
+    }
     e.dirty = true;
+    if (this.selection.docId === docId) this.clearSelection();
     const total = done.made.reduce((n, m) => n + m.count, 0);
     const full = done.blocked.length ? ` ${done.blocked.length} grade${done.blocked.length === 1 ? ' was' : 's were'} left because the next stack is full.` : '';
     this.toast('success', `Upgraded gems: ${total} new gem${total === 1 ? '' : 's'} made.${full} Undo with Ctrl+Z; nothing is written until you save.`);

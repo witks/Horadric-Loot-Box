@@ -243,6 +243,33 @@ describe('upgrade gems', () => {
     store.upgradeGems(FILE, tab());
     expect(have()).toEqual([0, 0, 0, 7, 99]);
   });
+
+  test('a failed upgrade leaves the tab and history unchanged', () => {
+    put([4, 0, 0, 0, 0]);
+    const t = stash().tabs[tab()];
+    const version = t.version;
+    const items = [...t.items];
+    const dirty = store.docs.get(FILE)!.dirty;
+    const undoSteps = (store as unknown as { history: unknown[] }).history.length;
+    t.version = 104; // new stacks can't be built for this version
+    try {
+      expect(store.upgradeGems(FILE, tab())).toBe(false);
+    } finally {
+      t.version = version;
+    }
+    expect(t.items).toEqual(items);
+    expect(have()).toEqual([4, 0, 0, 0, 0]);
+    expect(store.docs.get(FILE)!.dirty).toBe(dirty);
+    expect((store as unknown as { history: unknown[] }).history).toHaveLength(undoSteps);
+  });
+
+  test('an upgrade clears a selection holding replaced stacks', () => {
+    put([4, 0, 0, 0, 0]);
+    const gem = stash().tabs[tab()].items.find((i) => i.code === chain[0])!;
+    store.selection = { docId: FILE, items: new Set([gem]) };
+    expect(store.upgradeGems(FILE, tab())).toBe(true);
+    expect(store.selection.items.size).toBe(0);
+  });
 });
 
 describe('realms and read-only mode', () => {

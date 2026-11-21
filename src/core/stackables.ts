@@ -220,9 +220,16 @@ export function planGemUpgrade(stash: D2SharedStash, tab: number, keep = 1): Gem
 export function upgradeGems(stash: D2SharedStash, tab: number, keep = 1): GemUpgrade {
   const plan = planGemUpgrade(stash, tab, keep);
   const t = stash.tabs[tab];
-  for (const m of plan.made) {
-    setStack(stash, tab, m.from, stackTotal(t, m.from) - 3 * m.count);
-    setStack(stash, tab, m.to, stackTotal(t, m.to) + m.count);
+  if (!plan.made.length) return plan;
+  const before = [...t.items];
+  try {
+    for (const m of plan.made) {
+      setStack(stash, tab, m.from, stackTotal(t, m.from) - 3 * m.count);
+      setStack(stash, tab, m.to, stackTotal(t, m.to) + m.count);
+    }
+  } catch (err) {
+    t.items = before;
+    throw err;
   }
   return plan;
 }
