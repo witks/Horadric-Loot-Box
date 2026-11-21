@@ -210,7 +210,7 @@ const KEEP_KEY = 'hlb.gemKeep';
 const readKeep = () => {
   try {
     const n = Number(localStorage.getItem(KEEP_KEY));
-    return localStorage.getItem(KEEP_KEY) !== null && n >= 0 && n <= 25 ? Math.round(n) : 1;
+    return localStorage.getItem(KEEP_KEY) !== null && n >= 0 && n <= 80 ? Math.round(n) : 1;
   } catch {
     return 1;
   }
@@ -229,17 +229,21 @@ function UpgradeGemsButton({ docId, tab }: { docId: string; tab: number }) {
       <button
         type="button"
         onClick={() => (made ? setConfirming(true) : store.upgradeGems(docId, tab, keep))}
-        className={`rounded border px-2.5 py-1 text-[12px] transition ${made ? 'border-gold-500 bg-gold-600/15 text-gold-300 hover:bg-gold-600/25' : 'border-ink-600 bg-ink-900 text-ink-500'}`}
+        className={`inline-grid rounded border px-2.5 py-1 text-[12px] tabular-nums transition ${made ? 'border-gold-500 bg-gold-600/15 text-gold-300 hover:bg-gold-600/25' : 'border-ink-600 bg-ink-900 text-ink-500'}`}
         title="Combine every 3 gems of the same grade into 1 of the next grade (like the Horadric Cube), lowest grade first. A grade is skipped when the next stack is full (99)."
       >
-        Upgrade gems{made ? ` (+${made})` : ''}
+        {/* Reserves the widest label so the slider beside the button doesn't move as the count changes. */}
+        <span aria-hidden className="invisible col-start-1 row-start-1">
+          Upgrade gems (+888)
+        </span>
+        <span className="col-start-1 row-start-1 text-center">Upgrade gems{made ? ` (+${made})` : ''}</span>
       </button>
-      <label className="flex items-center gap-2 text-[12px] text-ink-300" title="Gems of each grade that always stay. A grade with this many or fewer isn't upgraded (0 to 25).">
+      <label className="flex items-center gap-2 text-[12px] text-ink-300" title="Gems of each grade that always stay. A grade with this many or fewer isn't upgraded (0 to 80).">
         Keep
         <input
           type="range"
           min={0}
-          max={25}
+          max={80}
           step={1}
           value={keep}
           onChange={(e) => {
