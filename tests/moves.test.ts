@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'vitest';
 import fs from 'node:fs';
-import { GD, ItemMode, gemChains, setStack, stackCount, Quality, canEquip, collectHeld, parseCharacter, parseStash, serializeVerified, type CollectionKind, type D2Character, type D2Item, type D2SharedStash } from '../src/core';
+import { GD, ItemMode, RUNE_RECIPES, gemChains, planRuneUpgrade, runeUpgradeChanges, runeUpgradeTotals, setStack, stackCount, Quality, canEquip, collectHeld, parseCharacter, parseStash, serializeVerified, type CollectionKind, type D2Character, type D2Item, type D2SharedStash } from '../src/core';
 import type { Platform } from '../src/platform';
 import { Store } from '../src/state/store';
 
@@ -268,6 +268,156 @@ describe('upgrade gems', () => {
     const gem = stash().tabs[tab()].items.find((i) => i.code === chain[0])!;
     store.selection = { docId: FILE, items: new Set([gem]) };
     expect(store.upgradeGems(FILE, tab())).toBe(true);
+    expect(store.selection.items.size).toBe(0);
+  });
+});
+
+describe('upgrade runes', () => {
+  const FILE = 't/ModernSharedStashSoftCoreV2.d2i';
+  const stash = () => store.docs.get(FILE)!.doc as D2SharedStash;
+  const tab = () => stash().tabs.findIndex((t) => t.type === 1);
+  const count = (code: string) => stash().tabs[tab()].items.filter((i) => i.code === code).reduce((n, i) => n + (i.advancedStackSize ?? 1), 0);
+  const put = (counts: Record<string, number>) => {
+    const t = stash().tabs[tab()];
+    t.items = t.items.filter((i) => !/^r\d\d$/.test(i.code) && !RUNE_RECIPES.some((r) => r.gem === i.code));
+    for (const [code, n] of Object.entries(counts)) setStack(stash(), tab(), code, n);
+  };
+  const have = (...codes: string[]) => codes.map(count);
+
+  test('the recipes match the game data', () => {
+    const [head, ...rows] = fs.readFileSync('vendor/d2r-3.3/cubemain.txt', 'utf8').split(/\r?\n/).map((l) => l.split('\t'));
+    const col = (name: string) => head.indexOf(name);
+    const game = rows.flatMap((r) => {
+      const m = /^"?(r\d\d),qty=(\d)"?$/.exec(r[col('input 1')] ?? '');
+      if (!m || r[col('enabled')] !== '1' || !/^r\d\d$/.test(r[col('output')] ?? '') || r[col('output')] <= m[1]) return [];
+      return [{ from: m[1], to: r[col('output')], cost: Number(m[2]), gem: r[col('input 2')] || undefined }];
+    });
+    expect(game).toHaveLength(32);
+    const byFrom = (a: { from: string }, b: { from: string }) => a.from.localeCompare(b.from);
+    expect([...game].sort(byFrom)).toEqual(RUNE_RECIPES.map((r) => ({ from: r.from, to: r.to, cost: r.cost, gem: r.gem })));
+  });
+
+  test('three plain runes cascade upward, keeping one of each', () => {
+    put({ r01: 10 });
+    expect(store.upgradeRunes(FILE, tab())).toBe(true);
+    // 10 El: keep 1, 9 make 3 Eld; 3 Eld: keep 1, the other 2 can't make a Tir
+    expect(have('r01', 'r02', 'r03')).toEqual([1, 3, 0]);
+    store.undo();
+    expect(have('r01', 'r02')).toEqual([10, 0]);
+    put({ r01: 13 });
+    store.upgradeRunes(FILE, tab());
+    // 13 El: 4 Eld and 1 El; 4 Eld: 1 Tir and 1 Eld
+    expect(have('r01', 'r02', 'r03')).toEqual([1, 1, 1]);
+  });
+
+  test('a gem recipe uses its gem; a two-rune recipe costs two', () => {
+    put({ r10: 4, gcy: 3 });
+    store.upgradeRunes(FILE, tab(), { maxRune: 'r11' });
+    expect(have('r10', 'r11', 'gcy')).toEqual([1, 1, 2]);
+    put({ r21: 3, gfw: 2 });
+    store.upgradeRunes(FILE, tab(), { maxRune: 'r22' });
+    expect(have('r21', 'r22', 'gfw')).toEqual([1, 1, 1]);
+  });
+
+  test('the default ceiling never spends Pul or makes Um', () => {
+    put({ r21: 20, gfw: 20 });
+    expect(store.upgradeRunes(FILE, tab())).toBe(false);
+    expect(have('r21', 'r22', 'gfw')).toEqual([20, 0, 20]);
+  });
+
+  test('available gems and full stacks limit an upgrade', () => {
+    put({ r10: 10 });
+    expect(planRuneUpgrade(stash(), tab(), { maxRune: 'r11' }).blocked[0]).toMatchObject({ reason: 'gem', gem: 'gcy' });
+    expect(store.upgradeRunes(FILE, tab(), { maxRune: 'r11' })).toBe(false);
+    put({ r10: 10, gcy: 2 });
+    store.upgradeRunes(FILE, tab(), { maxRune: 'r11' });
+    expect(have('r10', 'r11', 'gcy')).toEqual([4, 2, 0]);
+    put({ r01: 10, r02: 99 });
+    expect(store.upgradeRunes(FILE, tab(), { maxRune: 'r02' })).toBe(false);
+    expect(planRuneUpgrade(stash(), tab(), { maxRune: 'r02' }).blocked[0].reason).toBe('full');
+  });
+
+  test('one upgrade uses room freed by a higher recipe in the same run', () => {
+    put({ r01: 10, r02: 99 });
+    const plan = planRuneUpgrade(stash(), tab());
+    expect(plan.blocked).toEqual([]);
+    expect(store.upgradeRunes(FILE, tab())).toBe(true);
+    expect(have('r01', 'r02', 'r03', 'r04', 'r05')).toEqual([1, 3, 3, 1, 3]);
+    expect(store.upgradeRunes(FILE, tab())).toBe(false);
+  });
+
+  test('lists each stack that ends up changing, combining repeated recipes', () => {
+    put({ r01: 10, r02: 99 });
+    expect(runeUpgradeChanges(stash(), tab(), planRuneUpgrade(stash(), tab())).runes).toEqual([
+      { code: 'r01', before: 10, after: 1 },
+      { code: 'r02', before: 99, after: 3 },
+      { code: 'r03', before: 0, after: 3 },
+      { code: 'r04', before: 0, after: 1 },
+      { code: 'r05', before: 0, after: 3 },
+    ]);
+    put({ r10: 7, gcy: 5 });
+    const { runes, gems } = runeUpgradeChanges(stash(), tab(), planRuneUpgrade(stash(), tab(), { maxRune: 'r11' }));
+    expect(runes).toEqual([
+      { code: 'r10', before: 7, after: 1 },
+      { code: 'r11', before: 0, after: 2 },
+    ]);
+    expect(gems).toEqual([{ code: 'gcy', before: 5, after: 3 }]);
+  });
+
+  test('survives a save round trip', () => {
+    put({ r10: 4, gcy: 2 });
+    store.upgradeRunes(FILE, tab(), { maxRune: 'r11' });
+    const again = roundTrip(stash()) as D2SharedStash;
+    expect(again.tabs[tab()].items.find((i) => i.code === 'r11')!.advancedStackSize ?? 1).toBe(1);
+    expect(again.tabs[tab()].items.find((i) => i.code === 'r10')!.advancedStackSize ?? 1).toBe(1);
+  });
+
+  test('a failed upgrade leaves the tab and history unchanged', () => {
+    put({ r01: 4 });
+    const t = stash().tabs[tab()];
+    const version = t.version;
+    const items = [...t.items];
+    const dirty = store.docs.get(FILE)!.dirty;
+    const undoSteps = (store as unknown as { history: unknown[] }).history.length;
+    t.version = 104; // new stacks can't be built for this version
+    try {
+      expect(store.upgradeRunes(FILE, tab())).toBe(false);
+    } finally {
+      t.version = version;
+    }
+    expect(t.items).toEqual(items);
+    expect(store.docs.get(FILE)!.dirty).toBe(dirty);
+    expect((store as unknown as { history: unknown[] }).history).toHaveLength(undoSteps);
+  });
+
+  test('totals count a cascade by what actually changes', () => {
+    put({ r01: 13 });
+    expect(runeUpgradeTotals(planRuneUpgrade(stash(), tab()))).toEqual({ made: 2, spent: 12 });
+  });
+
+  test('a failed upgrade keeps the oldest step of a full history', () => {
+    put({ r01: 4 });
+    const t = stash().tabs[tab()];
+    const version = t.version;
+    const holder = store as unknown as { history: unknown[] };
+    const saved = holder.history;
+    const full = Array.from({ length: 50 }, (_, i) => ({ label: `step ${i}`, lists: new Map() }));
+    holder.history = full;
+    t.version = 104;
+    try {
+      expect(store.upgradeRunes(FILE, tab())).toBe(false);
+      expect(holder.history).toEqual(full);
+    } finally {
+      t.version = version;
+      holder.history = saved;
+    }
+  });
+
+  test('an upgrade clears a selection holding replaced stacks', () => {
+    put({ r01: 4 });
+    const el = stash().tabs[tab()].items.find((i) => i.code === 'r01')!;
+    store.selection = { docId: FILE, items: new Set([el]) };
+    expect(store.upgradeRunes(FILE, tab())).toBe(true);
     expect(store.selection.items.size).toBe(0);
   });
 });

@@ -26,6 +26,10 @@ import {
   isBoardStackable,
   planGemUpgrade,
   upgradeGems,
+  planRuneUpgrade,
+  runeUpgradeTotals,
+  upgradeRunes,
+  type RuneUpgradeOptions,
   stackCount,
   withPlacement,
   GRID_SIZE,
@@ -1423,6 +1427,42 @@ export class Store {
     const total = done.made.reduce((n, m) => n + m.count, 0);
     const full = done.blocked.length ? ` ${done.blocked.length} grade${done.blocked.length === 1 ? ' was' : 's were'} left because the next stack is full.` : '';
     this.toast('success', `Upgraded gems: ${total} new gem${total === 1 ? '' : 's'} made.${full} Undo with Ctrl+Z; nothing is written until you save.`);
+    this.emit();
+    return true;
+  }
+
+  upgradeRunes(docId: string, tab: number, opts: RuneUpgradeOptions = {}): boolean {
+    if (this.settings.readOnly) return (this.toast('error', 'Read-only mode is on.'), false);
+    const e = this.docs.get(docId);
+    const d = e?.doc;
+    if (!e || d?.kind !== 'stash') return false;
+    const plan = planRuneUpgrade(d, tab, opts);
+    const name = (c: string) => GD.items[c]?.name ?? c;
+    if (!plan.made.length) {
+      const first = plan.blocked[0];
+      const why = !first ? 'no rune in range has enough to spare after Keep.' : first.reason === 'gem' ? `${name(first.to)} needs ${name(first.gem!)}.` : `the ${name(first.to)} stack is full.`;
+      this.toast('info', `Nothing to upgrade: ${why}`);
+      return false;
+    }
+    const historyBefore = this.history;
+    this.snapshot('upgrade runes', [docId]);
+    let done;
+    try {
+      done = upgradeRunes(d, tab, opts);
+    } catch (err) {
+      // not pop(): a full history already evicted its oldest step for this snapshot
+      this.history = historyBefore;
+      this.toast('error', `Couldn't upgrade runes: ${err instanceof Error ? err.message : String(err)}`);
+      this.emit();
+      return false;
+    }
+    e.dirty = true;
+    if (this.selection.docId === docId) this.clearSelection();
+    const total = runeUpgradeTotals(done).made;
+    const gems = done.made.reduce((n, m) => n + (m.gem ? m.count : 0), 0);
+    const used = gems ? ` ${gems} gem${gems === 1 ? '' : 's'} used.` : '';
+    const held = done.blocked.length ? ` ${done.blocked.length} upgrade${done.blocked.length === 1 ? ' was' : 's were'} limited by gems or a full stack.` : '';
+    this.toast('success', `Upgraded runes: ${total} new rune${total === 1 ? '' : 's'} made.${used}${held} Undo with Ctrl+Z; nothing is written until you save.`);
     this.emit();
     return true;
   }

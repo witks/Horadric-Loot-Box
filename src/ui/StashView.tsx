@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { arrangeStackables, planGemUpgrade, GD, gridDims, STACKABLE_SLOTS, STACKABLES_COLS, STACKABLES_LABEL, STACKABLES_ROWS, StashTabType, tabIsEditable, type D2Item, type D2SharedStash } from '../core';
+import { arrangeStackables, DEFAULT_RUNE_MAX, planGemUpgrade, planRuneUpgrade, runeUpgradeChanges, runeUpgradeTotals, RUNE_RECIPES, GD, gridDims, STACKABLE_SLOTS, STACKABLES_COLS, STACKABLES_LABEL, STACKABLES_ROWS, StashTabType, tabIsEditable, type D2Item, type D2SharedStash, type StackChange } from '../core';
 import { ItemTile } from './ItemTile';
 import { desc, itemKey } from '../state/store';
 import { Badge } from './CharacterView';
@@ -201,15 +201,18 @@ function StackBoardView({ docId, pane, tab, items }: { docId: string; pane: 0 | 
         </div>
       )}
       {canDrag && <UpgradeGemsButton docId={docId} tab={tab} />}
+      {canDrag && <UpgradeRunesButton docId={docId} tab={tab} />}
       <p className="text-[11px] text-ink-500" style={{ maxWidth: Math.max(size.cols * cell + 8, 300) }}>Drop runes, gems, keys and other stackables here to add them to their stack (99 max). Drag one out to take a single item.</p>
     </div>
   );
 }
 
 const KEEP_KEY = 'hlb.gemKeep';
-const readKeep = () => {
+const RUNE_KEEP_KEY = 'hlb.runeKeep';
+const RUNE_MAX_KEY = 'hlb.runeMax';
+const readKeep = (key: string) => {
   try {
-    const raw = localStorage.getItem(KEEP_KEY);
+    const raw = localStorage.getItem(key);
     if (raw === null || raw.trim() === '') return 1;
     const n = Number(raw);
     return Number.isFinite(n) && n >= 0 && n <= 80 ? Math.round(n) : 1;
@@ -217,11 +220,145 @@ const readKeep = () => {
     return 1;
   }
 };
+const readSetting = (key: string) => {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+const remember = (key: string, value: string) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* remembering it is optional */
+  }
+};
+
+/** Stack counts before and after an upgrade, with the net change. */
+function StackChanges({ title, changes, label }: { title: string; changes: StackChange[]; label: (code: string) => string }) {
+  return (
+    <div className="mt-2">
+      <div className="mb-0.5 text-[11px] text-ink-500">{title}</div>
+      <ul className="grid grid-cols-2 gap-x-5 gap-y-0.5 tabular-nums">
+        {changes.map((c) => {
+          const delta = c.after - c.before;
+          return (
+            <li key={c.code} className="flex items-baseline gap-2">
+              <span className="min-w-0 flex-1 truncate" title={label(c.code)}>
+                {label(c.code)}
+              </span>
+              <span className="text-ink-400">
+                {c.before} → <span className="text-ink-200">{c.after}</span>
+              </span>
+              <span className={`w-8 text-right ${delta > 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                {delta > 0 ? `+${delta}` : `−${-delta}`}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function UpgradeRunesButton({ docId, tab }: { docId: string; tab: number }) {
+  const store = useStore();
+  const [keep, setKeep] = useState(() => readKeep(RUNE_KEEP_KEY));
+  const [maxRune, setMaxRune] = useState(() => {
+    const saved = readSetting(RUNE_MAX_KEY);
+    return RUNE_RECIPES.some((r) => r.to === saved) ? saved! : DEFAULT_RUNE_MAX;
+  });
+  const [confirming, setConfirming] = useState(false);
+  const opts = { keep, maxRune };
+  const doc = store.docs.get(docId)?.doc;
+  const plan = doc?.kind === 'stash' ? planRuneUpgrade(doc, tab, opts) : undefined;
+  const { made, spent } = plan ? runeUpgradeTotals(plan) : { made: 0, spent: 0 };
+  const changes = doc?.kind === 'stash' && plan ? runeUpgradeChanges(doc, tab, plan) : { runes: [], gems: [] };
+  const name = (c: string) => GD.items[c]?.name ?? c;
+  useEffect(() => setConfirming(false), [docId, tab, keep, maxRune, made, spent]);
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <button
+        type="button"
+        onClick={() => (made ? setConfirming(true) : store.upgradeRunes(docId, tab, opts))}
+        className={`inline-grid rounded border px-2.5 py-1 text-[12px] tabular-nums transition ${made ? 'border-gold-500 bg-gold-600/15 text-gold-300 hover:bg-gold-600/25' : 'border-ink-600 bg-ink-900 text-ink-500'}`}
+        title="Upgrade runes with the Horadric Cube's recipes, lowest first. Higher recipes also use a gem from this tab."
+      >
+        <span aria-hidden className="invisible col-start-1 row-start-1">
+          Upgrade runes (+888)
+        </span>
+        <span className="col-start-1 row-start-1 text-center">Upgrade runes{made ? ` (+${made})` : ''}</span>
+      </button>
+      <label className="flex items-center gap-2 text-[12px] text-ink-300" title="The highest rune an upgrade may make.">
+        Up to
+        <select
+          value={maxRune}
+          onChange={(e) => {
+            setMaxRune(e.target.value);
+            remember(RUNE_MAX_KEY, e.target.value);
+          }}
+          className="rounded border border-ink-600 bg-ink-900 px-1 py-0.5 text-gold-300"
+        >
+          {RUNE_RECIPES.map((r) => (
+            <option key={r.to} value={r.to}>
+              {name(r.to).replace(/ Rune$/, '')}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2 text-[12px] text-ink-300" title="Runes of each kind that always stay (0 to 80).">
+        Keep
+        <input
+          type="range"
+          min={0}
+          max={80}
+          step={1}
+          value={keep}
+          onChange={(e) => {
+            const n = Number(e.target.value);
+            setKeep(n);
+            remember(RUNE_KEEP_KEY, String(n));
+          }}
+          className="w-32 accent-[#c7a04a]"
+        />
+        <span className="w-4 text-gold-300">{keep}</span>
+      </label>
+      {confirming && made > 0 && (
+        <div className="basis-full">
+        <div className="max-w-[500px] rounded border border-gold-500/60 bg-ink-900 p-3 text-[12px] text-ink-200" role="alertdialog" aria-label="Confirm rune upgrade">
+          <div className="mb-1 font-semibold text-gold-300">Upgrade runes?</div>
+          <p>
+            Makes {made} new rune{made === 1 ? '' : 's'} from {spent} rune{spent === 1 ? '' : 's'}.
+          </p>
+          <StackChanges title="Runes" changes={changes.runes} label={(c) => name(c).replace(/ Rune$/, '')} />
+          {changes.gems.length > 0 && <StackChanges title="Gems used" changes={changes.gems} label={name} />}
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              className="rounded border border-gold-500 bg-gold-600/25 px-2.5 py-1 text-gold-200 hover:bg-gold-600/40"
+              onClick={() => {
+                setConfirming(false);
+                store.upgradeRunes(docId, tab, opts);
+              }}
+            >
+              Upgrade
+            </button>
+            <button type="button" className="rounded border border-ink-600 px-2.5 py-1 text-ink-300 hover:bg-ink-800" onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Combines every three gems of one grade into one of the next, in this Stackables tab, keeping some of each grade. */
 function UpgradeGemsButton({ docId, tab }: { docId: string; tab: number }) {
   const store = useStore();
-  const [keep, setKeep] = useState(readKeep);
+  const [keep, setKeep] = useState(() => readKeep(KEEP_KEY));
   const [confirming, setConfirming] = useState(false);
   const doc = store.docs.get(docId)?.doc;
   const plan = doc?.kind === 'stash' ? planGemUpgrade(doc, tab, keep) : undefined;

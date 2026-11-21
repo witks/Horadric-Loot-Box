@@ -233,3 +233,128 @@ export function upgradeGems(stash: D2SharedStash, tab: number, keep = 1): GemUpg
   }
   return plan;
 }
+
+export interface RuneRecipe {
+  from: string;
+  to: string;
+  cost: 2 | 3;
+  gem?: string;
+}
+
+// the gem for each recipe from Thul -> Amn up to Cham -> Zod (cubemain.txt)
+const RUNE_GEMS = ['gcy', 'gcv', 'gcb', 'gcr', 'gcg', 'gcw', 'gfy', 'gfv', 'gfb', 'gfr', 'gfg', 'gfw', 'gsy', 'gsv', 'gsb', 'gsr', 'gsg', 'gsw', 'gly', 'gzv', 'glb', 'glr', 'glg'];
+const FIRST_GEM_RECIPE = 9; // Thul -> Amn
+const FIRST_TWO_RUNE_RECIPE = 20; // Pul -> Um
+
+export const RUNE_RECIPES: RuneRecipe[] = RUNES.slice(0, -1).map((from, i) => ({
+  from,
+  to: RUNES[i + 1],
+  cost: i >= FIRST_TWO_RUNE_RECIPE ? 2 : 3,
+  ...(i >= FIRST_GEM_RECIPE ? { gem: RUNE_GEMS[i - FIRST_GEM_RECIPE] } : {}),
+}));
+
+/** Pul: the last rune made from three runes, so a default upgrade never spends Pul or higher. */
+export const DEFAULT_RUNE_MAX = 'r21';
+
+export interface RuneUpgradeOptions {
+  keep?: number;
+  maxRune?: string;
+}
+
+export interface RuneUpgrade {
+  made: (RuneRecipe & { count: number })[];
+  /** Recipes with enough runes that were cut short by a full next stack or too few gems. */
+  blocked: { from: string; to: string; gem?: string; reason: 'full' | 'gem' }[];
+}
+
+const wholeCount = (n: number | undefined, fallback: number) => (Number.isFinite(n) ? Math.max(0, Math.floor(n!)) : fallback);
+
+export function planRuneUpgrade(stash: D2SharedStash, tab: number, opts: RuneUpgradeOptions = {}): RuneUpgrade {
+  const t = stash.tabs[tab];
+  const out: RuneUpgrade = { made: [], blocked: [] };
+  if (!t || t.type !== StashTabType.Advanced) return out;
+  const keep = wholeCount(opts.keep, 1);
+  const maxAt = RUNES.indexOf(opts.maxRune ?? DEFAULT_RUNE_MAX);
+  const last = maxAt >= 0 ? maxAt : RUNES.indexOf(DEFAULT_RUNE_MAX);
+  const have = new Map<string, number>();
+  const count = (code: string) => have.get(code) ?? stackTotal(t, code);
+  // Repeats because spending a full stack can free room for the recipe below it. `made` stays in
+  // run order, so a recipe can appear twice and no stack passes 99 on the way.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    out.blocked = [];
+    for (const recipe of RUNE_RECIPES) {
+      if (RUNES.indexOf(recipe.to) > last) break;
+      const sets = Math.max(0, Math.floor((count(recipe.from) - keep) / recipe.cost));
+      if (!sets) continue;
+      const room = Math.max(0, STACK_MAX - count(recipe.to));
+      const gems = recipe.gem ? count(recipe.gem) : Infinity;
+      const k = Math.min(sets, room, gems);
+      if (k < sets) out.blocked.push({ from: recipe.from, to: recipe.to, gem: recipe.gem, reason: gems < room ? 'gem' : 'full' });
+      if (k <= 0) continue;
+      have.set(recipe.from, count(recipe.from) - recipe.cost * k);
+      have.set(recipe.to, count(recipe.to) + k);
+      if (recipe.gem) have.set(recipe.gem, count(recipe.gem) - k);
+      out.made.push({ ...recipe, count: k });
+      changed = true;
+    }
+  }
+  return out;
+}
+
+/** Net of cascades: a rune made by one recipe and used by the next counts on neither side. */
+export function runeUpgradeTotals(plan: RuneUpgrade): { made: number; spent: number } {
+  const change = new Map<string, number>();
+  for (const m of plan.made) {
+    change.set(m.from, (change.get(m.from) ?? 0) - m.cost * m.count);
+    change.set(m.to, (change.get(m.to) ?? 0) + m.count);
+  }
+  const deltas = [...change.values()];
+  return {
+    made: deltas.reduce((n, d) => n + Math.max(d, 0), 0),
+    spent: deltas.reduce((n, d) => n + Math.max(-d, 0), 0),
+  };
+}
+
+export interface StackChange {
+  code: string;
+  before: number;
+  after: number;
+}
+
+/** Each rune and gem stack the plan ends up changing, lowest first. A rune made and fully respent isn't listed. */
+export function runeUpgradeChanges(stash: D2SharedStash, tab: number, plan: RuneUpgrade): { runes: StackChange[]; gems: StackChange[] } {
+  const t = stash.tabs[tab];
+  const delta = new Map<string, number>();
+  const add = (code: string, n: number) => delta.set(code, (delta.get(code) ?? 0) + n);
+  for (const m of plan.made) {
+    add(m.from, -m.cost * m.count);
+    add(m.to, m.count);
+    if (m.gem) add(m.gem, -m.count);
+  }
+  const changes = [...delta].filter(([, d]) => d !== 0).map(([code, d]) => ({ code, before: stackTotal(t, code), after: stackTotal(t, code) + d }));
+  return {
+    runes: changes.filter((c) => RUNES.includes(c.code)).sort((a, b) => RUNES.indexOf(a.code) - RUNES.indexOf(b.code)),
+    gems: changes.filter((c) => !RUNES.includes(c.code)),
+  };
+}
+
+/** Runs lowest first so new runes can combine again. Mutates the stash. */
+export function upgradeRunes(stash: D2SharedStash, tab: number, opts: RuneUpgradeOptions = {}): RuneUpgrade {
+  const plan = planRuneUpgrade(stash, tab, opts);
+  const t = stash.tabs[tab];
+  if (!plan.made.length) return plan;
+  const before = [...t.items];
+  try {
+    for (const m of plan.made) {
+      setStack(stash, tab, m.from, stackTotal(t, m.from) - m.cost * m.count);
+      if (m.gem) setStack(stash, tab, m.gem, stackTotal(t, m.gem) - m.count);
+      setStack(stash, tab, m.to, stackTotal(t, m.to) + m.count);
+    }
+  } catch (err) {
+    t.items = before;
+    throw err;
+  }
+  return plan;
+}
