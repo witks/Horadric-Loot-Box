@@ -360,7 +360,7 @@ export function CollectionView({ docId, pane, kind, query }: { docId: string; pa
                           : undefined
                       }
                       onMouseLeave={tip.hide}
-                      className={`relative flex flex-col items-center rounded-[3px] border px-1 pb-1 pt-1.5 text-center transition ${
+                      className={`relative flex flex-col items-center rounded-[3px] border px-1 pb-1 pt-1.5 text-center ${
                         found
                           ? elsewhere
                             ? 'cursor-default border-dashed bg-[#17150f] [&>*]:opacity-[.55]'
